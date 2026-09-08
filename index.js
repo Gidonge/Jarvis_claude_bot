@@ -401,26 +401,103 @@ function condenseAion2Data(data) {
   };
 }
 
+// 등급을 숫자로 환산 (상대적 비교용, 정확한 공식 아님 - 대략적인 순서)
+const GRADE_RANK = { Common: 1, Rare: 2, Special: 2.5, Unique: 3, Epic: 4, Legend: 5 };
+
+function gradeValue(grade) {
+  return GRADE_RANK[grade] ?? 0;
+}
+
+// 두 캐릭터의 장비를 슬롯별로 직접 대조해서, 실제 격차(강화/초월/등급 차이)를 계산.
+// AI가 추측하지 않고 이 계산된 사실을 근거로 설명하도록 넘겨줌.
+function buildAion2GearDiff(dataA, dataB) {
+  const itemsA = [...(dataA.equipment ?? []), ...(dataA.accessories ?? [])];
+  const itemsB = [...(dataB.equipment ?? []), ...(dataB.accessories ?? [])];
+
+  const bySlotA = Object.fromEntries(itemsA.map((i) => [i.slot_pos_name, i]));
+  const bySlotB = Object.fromEntries(itemsB.map((i) => [i.slot_pos_name, i]));
+  const allSlots = new Set([...Object.keys(bySlotA), ...Object.keys(bySlotB)]);
+
+  const diffs = [];
+  for (const slot of allSlots) {
+    const a = bySlotA[slot];
+    const b = bySlotB[slot];
+
+    if (!a || !b) {
+      diffs.push({
+        slot,
+        note: !a ? `${dataA.nickname}는 미착용, ${dataB.nickname}는 ${b.name} 착용` : `${dataB.nickname}는 미착용, ${dataA.nickname}는 ${a.name} 착용`,
+      });
+      continue;
+    }
+
+    const enchantDiff = (a.enhance_level ?? 0) - (b.enhance_level ?? 0);
+    const exceedDiff = (a.exceed_level ?? 0) - (b.exceed_level ?? 0);
+    const gradeDiff = gradeValue(a.grade) - gradeValue(b.grade);
+
+    if (enchantDiff !== 0 || exceedDiff !== 0 || gradeDiff !== 0) {
+      diffs.push({
+        slot,
+        nameA: a.name,
+        nameB: b.name,
+        gradeA: a.grade,
+        gradeB: b.grade,
+        enchantA: a.enhance_level,
+        enchantB: b.enhance_level,
+        exceedA: a.exceed_level,
+        exceedB: b.exceed_level,
+      });
+    }
+  }
+  return diffs;
+}
+
+// 주요 스탯 차이도 직접 계산
+function buildAion2StatDiff(dataA, dataB) {
+  const mainStatOrder = ["STR", "DEX", "INT", "CON", "AGI", "WIS"];
+  const statsA = Object.fromEntries(
+    (dataA.stat?.statList ?? []).filter((s) => mainStatOrder.includes(s.type)).map((s) => [s.type, s.value])
+  );
+  const statsB = Object.fromEntries(
+    (dataB.stat?.statList ?? []).filter((s) => mainStatOrder.includes(s.type)).map((s) => [s.type, s.value])
+  );
+  return mainStatOrder.map((type) => ({
+    stat: type,
+    a: statsA[type] ?? 0,
+    b: statsB[type] ?? 0,
+    diff: (statsA[type] ?? 0) - (statsB[type] ?? 0),
+  }));
+}
+
 const AION2_ANALYSIS_PROMPT =
   "너는 MMORPG 아이온2의 숙련된 스펙업 코치야. 사용자가 준 캐릭터 데이터(JSON)를 분석해서, " +
   "1) 현재 상태 한 줄 요약, 2) 강화/초월/등급 중 가장 낮은 장비 슬롯 지적, 3) 다음에 우선적으로 " +
   "투자하면 좋을 항목 3~5개를 순서대로, 각 항목마다 이유를 한 줄씩 붙여서 한국어로 간결하게 답변해줘. " +
   "장황한 설명 없이 실용적인 조언 위주로.";
 
-async function analyzeAion2Character(data) {
-  const condensed = condenseAion2Data(data);
-  const messages = [
-    { role: "system", content: AION2_ANALYSIS_PROMPT },
-    { role: "user", content: JSON.stringify(condensed) },
-  ];
+const AION2_COMPARE_PROMPT =
+  "너는 MMORPG 아이온2의 숙련된 스펙업 코치야. 두 캐릭터(A, B)의 요약 정보와, 이미 계산된 " +
+  "'슬롯별 장비 격차(gearDiff)', '주요 스탯 격차(statDiff)' 데이터를 받을 거야. 이 계산된 수치를 " +
+  "그대로 근거로 사용해서(직접 추측하지 말고): " +
+  "1) 종합적으로 누가 더 앞서는지와 그 격차 폭, " +
+  "2) gearDiff에서 격차가 큰 슬롯들을 짚어가며 '왜' 뒤처지는지 구체적 수치와 함께 설명, " +
+  "3) 뒤처지는 쪽이 따라잡으려면 우선순위 순으로 무엇부터 투자해야 하는지 방향성 3~5가지를 " +
+  "각각 이유와 함께 한국어로 답변해줘. 장황한 설명 없이 실용적으로, 구체적인 슬롯명과 수치를 인용해가며.";
 
+async function askOpenRouterPlain(systemPrompt, userContent) {
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ model: MODEL, messages }), // 분석은 검색 불필요하므로 web 플러그인 생략
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent },
+      ],
+    }), // 분석은 검색 불필요하므로 web 플러그인 생략
   });
 
   if (!response.ok) {
@@ -430,6 +507,39 @@ async function analyzeAion2Character(data) {
 
   const json = await response.json();
   return json.choices?.[0]?.message?.content ?? "분석 결과를 받지 못했어요.";
+}
+
+async function analyzeAion2Character(data) {
+  return askOpenRouterPlain(AION2_ANALYSIS_PROMPT, JSON.stringify(condenseAion2Data(data)));
+}
+
+async function compareAion2Characters(dataA, dataB) {
+  const payload = JSON.stringify({
+    characterA: condenseAion2Data(dataA),
+    characterB: condenseAion2Data(dataB),
+    gearDiff: buildAion2GearDiff(dataA, dataB),
+    statDiff: buildAion2StatDiff(dataA, dataB),
+  });
+  return askOpenRouterPlain(AION2_COMPARE_PROMPT, payload);
+}
+
+// AI 없이 빠르게 숫자만 비교
+function quickCompareAion2(dataA, dataB) {
+  const ilA = dataA.stat?.statList?.find((s) => s.type === "ItemLevel")?.value ?? 0;
+  const ilB = dataB.stat?.statList?.find((s) => s.type === "ItemLevel")?.value ?? 0;
+  const cpA = dataA.combat_power2 ?? dataA.nc_combat_power ?? 0;
+  const cpB = dataB.combat_power2 ?? dataB.nc_combat_power ?? 0;
+
+  const ilWinner = ilA === ilB ? "무승부" : ilA > ilB ? dataA.nickname : dataB.nickname;
+  const cpWinner = cpA === cpB ? "무승부" : cpA > cpB ? dataA.nickname : dataB.nickname;
+
+  return (
+    `**${dataA.nickname}** vs **${dataB.nickname}**\n` +
+    `아이템 레벨: ${ilA.toLocaleString("ko-KR")} vs ${ilB.toLocaleString("ko-KR")} → 우세: ${ilWinner}\n` +
+    `전투력: ${cpA.toLocaleString("ko-KR")} vs ${cpB.toLocaleString("ko-KR")} → 우세: ${cpWinner}\n` +
+    `레벨: ${dataA.level} vs ${dataB.level}\n` +
+    `길드: ${dataA.guild || "-"} vs ${dataB.guild || "-"}`
+  );
 }
 
 client.on("messageCreate", async (message) => {
@@ -628,6 +738,50 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
+  // --- 아이온2 캐릭터 AI 비교 분석 (!아이온2분석비교 서버명 닉네임1 닉네임2) ---
+  if (message.content.startsWith("!아이온2분석비교")) {
+    if (!allowedUsers.has(message.author.id)) {
+      await message.reply("이 봇은 권한이 있는 사용자만 사용할 수 있어요.");
+      return;
+    }
+
+    const [, serverToken, nameA, nameB] = message.content.trim().split(/\s+/);
+
+    if (!serverToken || !nameA || !nameB) {
+      await message.reply("사용법: `!아이온2분석비교 서버명 닉네임1 닉네임2` (같은 서버 기준)");
+      return;
+    }
+
+    const serverId = serverIds[serverToken] ?? Number(serverToken);
+    if (Number.isNaN(serverId)) {
+      await message.reply(`"${serverToken}"은 등록된 서버명도 아니고 숫자 ID도 아니에요.`);
+      return;
+    }
+
+    try {
+      await message.channel.sendTyping();
+      const [dataA, dataB] = await Promise.all([
+        searchAion2Character(serverId, nameA),
+        searchAion2Character(serverId, nameB),
+      ]);
+      const analysis = await compareAion2Characters(dataA, dataB);
+      const replyText = `**${nameA}** vs **${nameB}** 스펙업 비교 분석\n\n${analysis}`;
+
+      if (replyText.length > 2000) {
+        const chunks = replyText.match(/[\s\S]{1,1900}/g) ?? [];
+        for (const chunk of chunks) {
+          await message.channel.send(chunk);
+        }
+      } else {
+        await message.reply(replyText);
+      }
+      addToHistory(message.channel.id, `(아이온2 비교 분석: ${nameA} vs ${nameB})`, replyText);
+    } catch (error) {
+      await message.reply(`비교 분석 실패: ${error.message}`);
+    }
+    return;
+  }
+
   // --- 아이온2 캐릭터 스펙업 분석 (!아이온2분석 서버명또는ID 닉네임) ---
   if (message.content.startsWith("!아이온2분석")) {
     if (!allowedUsers.has(message.author.id)) {
@@ -665,6 +819,41 @@ client.on("messageCreate", async (message) => {
       addToHistory(message.channel.id, `(아이온2 스펙업 분석: ${nickname})`, replyText);
     } catch (error) {
       await message.reply(`분석 실패: ${error.message}`);
+    }
+    return;
+  }
+
+  // --- 아이온2 캐릭터 빠른 수치 비교 (!아이온2비교 서버명 닉네임1 닉네임2, AI 안 씀) ---
+  if (message.content.startsWith("!아이온2비교")) {
+    if (!allowedUsers.has(message.author.id)) {
+      await message.reply("이 봇은 권한이 있는 사용자만 사용할 수 있어요.");
+      return;
+    }
+
+    const [, serverToken, nameA, nameB] = message.content.trim().split(/\s+/);
+
+    if (!serverToken || !nameA || !nameB) {
+      await message.reply("사용법: `!아이온2비교 서버명 닉네임1 닉네임2` (같은 서버 기준)");
+      return;
+    }
+
+    const serverId = serverIds[serverToken] ?? Number(serverToken);
+    if (Number.isNaN(serverId)) {
+      await message.reply(`"${serverToken}"은 등록된 서버명도 아니고 숫자 ID도 아니에요.`);
+      return;
+    }
+
+    try {
+      await message.channel.sendTyping();
+      const [dataA, dataB] = await Promise.all([
+        searchAion2Character(serverId, nameA),
+        searchAion2Character(serverId, nameB),
+      ]);
+      const replyText = quickCompareAion2(dataA, dataB);
+      await message.reply(replyText);
+      addToHistory(message.channel.id, `(아이온2 수치 비교: ${nameA} vs ${nameB})`, replyText);
+    } catch (error) {
+      await message.reply(`비교 실패: ${error.message}`);
     }
     return;
   }
