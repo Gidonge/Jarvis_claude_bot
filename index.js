@@ -4,8 +4,11 @@ import fs from "fs";
 
 dotenv.config();
 
-const MODEL = "openrouter/free";
-const SYSTEM_PROMPT = "너는 디스코드 서버에서 사용자들을 돕는 친절한 AI 어시스턴트야. 답변은 간결하게 해줘.";
+const MODEL = "anthropic/claude-haiku-4.5";
+const SYSTEM_PROMPT =
+  "너는 디스코드 서버에서 사용자들을 돕는 친절한 AI 어시스턴트야. 답변은 간결하게 해줘. " +
+  "필요하면 웹 검색 결과를 참고해서 최신 정보로 답변할 수 있어. 환율처럼 정확한 숫자가 필요한 경우, " +
+  "검색 결과에서 찾은 최신 값을 기준으로 답하고 출처를 간단히 언급해줘.";
 
 // 관리자 유저 ID (.env의 ADMIN_USER_ID). 이 사람만 권한 부여/회수 명령어를 쓸 수 있음.
 const ADMIN_USER_ID = process.env.ADMIN_USER_ID;
@@ -57,6 +60,7 @@ async function askOpenRouter(messages) {
     body: JSON.stringify({
       model: MODEL,
       messages,
+      plugins: [{ id: "web" }], // 웹 검색 활성화 (검색 1회당 소액 과금)
     }),
   });
 
@@ -67,6 +71,23 @@ async function askOpenRouter(messages) {
 
   const data = await response.json();
   return data.choices?.[0]?.message?.content ?? "(응답을 받지 못했어요)";
+}
+
+// 무료 실시간 환율 API (키 필요 없음, 하루 단위로 갱신됨)
+async function getExchangeRate(from, to) {
+  const response = await fetch(`https://open.er-api.com/v6/latest/${from}`);
+  if (!response.ok) {
+    throw new Error(`환율 API 오류 (${response.status})`);
+  }
+  const data = await response.json();
+  if (data.result !== "success") {
+    throw new Error("지원하지 않는 통화 코드예요.");
+  }
+  const rate = data.rates[to];
+  if (rate === undefined) {
+    throw new Error("지원하지 않는 통화 코드예요.");
+  }
+  return { rate, lastUpdate: data.time_last_update_utc };
 }
 
 client.on("messageCreate", async (message) => {
@@ -103,6 +124,35 @@ client.on("messageCreate", async (message) => {
       allowedUsers.add(targetUser.id);
       saveAllowedUsers(allowedUsers);
       await message.reply(`${targetUser.username}님에게 사용 권한을 부여했어요.`);
+    }
+    return;
+  }
+
+  // --- 환율 조회 명령어 (!환율 HUF KRW [금액]) ---
+  if (message.content.startsWith("!환율")) {
+    if (!allowedUsers.has(message.author.id)) {
+      await message.reply("이 봇은 권한이 있는 사용자만 사용할 수 있어요.");
+      return;
+    }
+
+    const parts = message.content.trim().split(/\s+/); // ["!환율", "HUF", "KRW", "100"(선택)]
+    const from = parts[1]?.toUpperCase();
+    const to = parts[2]?.toUpperCase();
+    const amount = parts[3] ? Number(parts[3]) : 1;
+
+    if (!from || !to || Number.isNaN(amount)) {
+      await message.reply("사용법: `!환율 HUF KRW` 또는 `!환율 HUF KRW 100` (100 HUF를 KRW로 환산)");
+      return;
+    }
+
+    try {
+      const { rate, lastUpdate } = await getExchangeRate(from, to);
+      const converted = (rate * amount).toLocaleString("ko-KR", { maximumFractionDigits: 2 });
+      await message.reply(
+        `${amount.toLocaleString("ko-KR")} ${from} = **${converted} ${to}**\n(기준: ${lastUpdate})`
+      );
+    } catch (error) {
+      await message.reply(`환율 조회 실패: ${error.message}`);
     }
     return;
   }
