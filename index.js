@@ -1,12 +1,33 @@
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 import dotenv from "dotenv";
+import fs from "fs";
 
 dotenv.config();
 
-// 무료 모델 자동 선택 라우터. 특정 모델을 고정하고 싶으면
-// 예: "meta-llama/llama-3.1-405b-instruct:free" 처럼 :free로 끝나는 모델 ID로 바꾸세요.
 const MODEL = "openrouter/free";
 const SYSTEM_PROMPT = "너는 디스코드 서버에서 사용자들을 돕는 친절한 AI 어시스턴트야. 답변은 간결하게 해줘.";
+
+// 관리자 유저 ID (.env의 ADMIN_USER_ID). 이 사람만 권한 부여/회수 명령어를 쓸 수 있음.
+const ADMIN_USER_ID = process.env.ADMIN_USER_ID;
+
+// 허용된 유저 목록을 파일에 저장해서 봇 재시작해도 유지되게 함.
+const ALLOWLIST_FILE = "./allowed_users.json";
+
+function loadAllowedUsers() {
+  try {
+    const raw = fs.readFileSync(ALLOWLIST_FILE, "utf-8");
+    return new Set(JSON.parse(raw));
+  } catch {
+    // 파일이 없으면 관리자만 포함해서 시작
+    return new Set(ADMIN_USER_ID ? [ADMIN_USER_ID] : []);
+  }
+}
+
+function saveAllowedUsers(set) {
+  fs.writeFileSync(ALLOWLIST_FILE, JSON.stringify([...set]));
+}
+
+const allowedUsers = loadAllowedUsers();
 
 const client = new Client({
   intents: [
@@ -23,6 +44,7 @@ const MAX_HISTORY = 10; // 채널당 최근 10개 메시지까지만 기억
 
 client.once("ready", () => {
   console.log(`로그인 완료: ${client.user.tag}`);
+  console.log(`현재 허용된 유저: ${[...allowedUsers].join(", ") || "(없음)"}`);
 });
 
 async function askOpenRouter(messages) {
@@ -51,8 +73,48 @@ client.on("messageCreate", async (message) => {
   // 봇 자신의 메시지는 무시
   if (message.author.bot) return;
 
+  // --- 관리자 명령어 처리 (!허용, !허용해제, !허용목록) ---
+  if (message.content.startsWith("!허용") || message.content.startsWith("!allow")) {
+    if (message.author.id !== ADMIN_USER_ID) {
+      await message.reply("관리자만 사용할 수 있는 명령어예요.");
+      return;
+    }
+
+    const isRemove = message.content.startsWith("!허용해제") || message.content.startsWith("!disallow");
+    const isList = message.content.trim() === "!허용목록" || message.content.trim() === "!allowlist";
+
+    if (isList) {
+      const names = [...allowedUsers].map((id) => `<@${id}>`).join(", ") || "(없음)";
+      await message.reply(`현재 허용된 사용자: ${names}`);
+      return;
+    }
+
+    const targetUser = message.mentions.users.first();
+    if (!targetUser) {
+      await message.reply("사용법: `!허용 @사용자` 또는 `!허용해제 @사용자`");
+      return;
+    }
+
+    if (isRemove) {
+      allowedUsers.delete(targetUser.id);
+      saveAllowedUsers(allowedUsers);
+      await message.reply(`${targetUser.username}님의 사용 권한을 제거했어요.`);
+    } else {
+      allowedUsers.add(targetUser.id);
+      saveAllowedUsers(allowedUsers);
+      await message.reply(`${targetUser.username}님에게 사용 권한을 부여했어요.`);
+    }
+    return;
+  }
+
   // 봇이 멘션되었을 때만 반응 (예: @봇이름 안녕)
   if (!message.mentions.has(client.user)) return;
+
+  // 허용된 유저만 사용 가능
+  if (!allowedUsers.has(message.author.id)) {
+    await message.reply("이 봇은 권한이 있는 사용자만 사용할 수 있어요.");
+    return;
+  }
 
   const userText = message.content
     .replace(/<@!?\d+>/g, "") // 멘션 태그 제거
