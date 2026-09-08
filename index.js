@@ -50,6 +50,18 @@ const client = new Client({
 const historyByChannel = new Map();
 const MAX_HISTORY = 10; // 채널당 최근 10개 메시지까지만 기억
 
+// 명령어(!배그전적 등) 실행 결과도 AI 대화 맥락에 남겨서, 나중에 멘션했을 때
+// "방금 그거 누가 더 잘해?" 같은 후속 질문에 이어서 답할 수 있게 함
+function addToHistory(channelId, userText, assistantText) {
+  const history = historyByChannel.get(channelId) ?? [];
+  history.push({ role: "user", content: userText });
+  history.push({ role: "assistant", content: assistantText });
+  while (history.length > MAX_HISTORY) {
+    history.shift();
+  }
+  historyByChannel.set(channelId, history);
+}
+
 client.once("ready", () => {
   console.log(`로그인 완료: ${client.user.tag}`);
   console.log(`현재 허용된 유저: ${[...allowedUsers].join(", ") || "(없음)"}`);
@@ -320,10 +332,15 @@ client.on("messageCreate", async (message) => {
       ]);
 
       const comparison = comparePubgStats(nameA, statsA, nameB, statsB);
-      await message.reply(
+      const replyText =
         `**${nameA}** vs **${nameB}** 이번 시즌 비교\n\n${comparison}\n\n` +
-          `— ${nameA} 전체 전적 —\n${formatPubgStats(statsA)}\n\n` +
-          `— ${nameB} 전체 전적 —\n${formatPubgStats(statsB)}`
+        `— ${nameA} 전체 전적 —\n${formatPubgStats(statsA)}\n\n` +
+        `— ${nameB} 전체 전적 —\n${formatPubgStats(statsB)}`;
+      await message.reply(replyText);
+      addToHistory(
+        message.channel.id,
+        `(배그 전적 비교 조회: ${nameA} vs ${nameB})`,
+        replyText
       );
     } catch (error) {
       await message.reply(`비교 실패: ${error.message}`);
@@ -350,7 +367,9 @@ client.on("messageCreate", async (message) => {
       const seasonId = await getCurrentSeasonId();
       const stats = await getPubgSeasonStats(playerId, seasonId);
       const summary = formatPubgStats(stats);
-      await message.reply(`**${nickname}** 님의 이번 시즌 전적 (스팀 기준)\n${summary}`);
+      const replyText = `**${nickname}** 님의 이번 시즌 전적 (스팀 기준)\n${summary}`;
+      await message.reply(replyText);
+      addToHistory(message.channel.id, `(배그 전적 조회: ${nickname})`, replyText);
     } catch (error) {
       await message.reply(`전적 조회 실패: ${error.message}`);
     }
