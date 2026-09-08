@@ -204,19 +204,43 @@ function comparePubgStats(nameA, statsA, nameB, statsB) {
 // --- 아이온2(aion2tool.com) 캐릭터 검색 연동 ---
 // race: 1=천족, 2=마족으로 추정. 어느 쪽인지 모르니 순서대로 시도함.
 async function searchAion2Character(serverId, nickname) {
+  const errors = [];
+
   for (const race of [1, 2]) {
-    const response = await fetch("https://aion2tool.com/api/character/search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ race, server_id: serverId, keyword: nickname }),
-    });
-    if (!response.ok) continue;
+    let response;
+    try {
+      response = await fetch("https://aion2tool.com/api/character/search", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/plain, */*",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+          Referer: "https://aion2tool.com/",
+          Origin: "https://aion2tool.com",
+        },
+        body: JSON.stringify({ race, server_id: serverId, keyword: nickname }),
+      });
+    } catch (err) {
+      errors.push(`race=${race}: 네트워크 오류 (${err.message})`);
+      continue;
+    }
+
+    if (!response.ok) {
+      errors.push(`race=${race}: HTTP ${response.status}`);
+      continue;
+    }
+
     const json = await response.json();
     if (json.success && json.data) {
       return json.data;
     }
+    errors.push(`race=${race}: 응답은 받았지만 데이터 없음 (success=${json.success})`);
   }
-  throw new Error("해당 캐릭터를 찾을 수 없어요. 서버 ID와 닉네임을 다시 확인해주세요.");
+
+  throw new Error(
+    `해당 캐릭터를 찾을 수 없어요. 서버 ID와 닉네임을 다시 확인해주세요. [${errors.join(" / ")}]`
+  );
 }
 
 function formatAion2Character(data) {
