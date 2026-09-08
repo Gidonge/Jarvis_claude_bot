@@ -201,6 +201,39 @@ function comparePubgStats(nameA, statsA, nameB, statsB) {
   return lines.join("\n\n");
 }
 
+// --- 아이온2(aion2tool.com) 캐릭터 검색 연동 ---
+// race: 1=천족, 2=마족으로 추정. 어느 쪽인지 모르니 순서대로 시도함.
+async function searchAion2Character(serverId, nickname) {
+  for (const race of [1, 2]) {
+    const response = await fetch("https://aion2tool.com/api/character/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ race, server_id: serverId, keyword: nickname }),
+    });
+    if (!response.ok) continue;
+    const json = await response.json();
+    if (json.success && json.data) {
+      return json.data;
+    }
+  }
+  throw new Error("해당 캐릭터를 찾을 수 없어요. 서버 ID와 닉네임을 다시 확인해주세요.");
+}
+
+function formatAion2Character(data) {
+  const itemLevel =
+    data.stat?.statList?.find((s) => s.type === "ItemLevel")?.value ?? data.combat_power;
+  const combatPower = data.combat_power2 ?? data.nc_combat_power;
+
+  return (
+    `**${data.nickname}** (${data.server} / ${data.race} / ${data.job})\n` +
+    `레벨: ${data.level} | 아이템 레벨: ${itemLevel?.toLocaleString?.("ko-KR") ?? itemLevel}\n` +
+    `전투력: ${combatPower?.toLocaleString?.("ko-KR") ?? combatPower}\n` +
+    `길드: ${data.guild || "-"}\n` +
+    `보유 타이틀: ${data.title_summary?.owned_count ?? "-"} / ${data.title_summary?.total_count ?? "-"}\n` +
+    `날개: ${data.wing?.name || "-"}`
+  );
+}
+
 client.on("messageCreate", async (message) => {
   // 봇 자신의 메시지는 무시
   if (message.author.bot) return;
@@ -372,6 +405,36 @@ client.on("messageCreate", async (message) => {
       addToHistory(message.channel.id, `(배그 전적 조회: ${nickname})`, replyText);
     } catch (error) {
       await message.reply(`전적 조회 실패: ${error.message}`);
+    }
+    return;
+  }
+
+  // --- 아이온2 캐릭터 검색 명령어 (!아이온2 서버ID 닉네임) ---
+  if (message.content.startsWith("!아이온2")) {
+    if (!allowedUsers.has(message.author.id)) {
+      await message.reply("이 봇은 권한이 있는 사용자만 사용할 수 있어요.");
+      return;
+    }
+
+    const [, serverIdRaw, nickname] = message.content.trim().split(/\s+/);
+    const serverId = Number(serverIdRaw);
+
+    if (!serverIdRaw || !nickname || Number.isNaN(serverId)) {
+      await message.reply(
+        "사용법: `!아이온2 서버ID 닉네임` (예: `!아이온2 1019 기동이`)\n" +
+          "서버ID는 aion2tool.com에서 캐릭터 검색했을 때 뜨는 주소(aion2tool.com/char/serverid=숫자/닉네임)에서 확인 가능해요."
+      );
+      return;
+    }
+
+    try {
+      await message.channel.sendTyping();
+      const data = await searchAion2Character(serverId, nickname);
+      const replyText = formatAion2Character(data);
+      await message.reply(replyText);
+      addToHistory(message.channel.id, `(아이온2 캐릭터 조회: ${nickname})`, replyText);
+    } catch (error) {
+      await message.reply(`캐릭터 조회 실패: ${error.message}`);
     }
     return;
   }
