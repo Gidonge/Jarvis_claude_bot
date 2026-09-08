@@ -6,12 +6,16 @@ dotenv.config();
 
 const MODEL = "anthropic/claude-haiku-4.5";
 const SYSTEM_PROMPT =
-  "너는 디스코드 서버에서 사용자들을 돕는 친절한 AI 어시스턴트야. 답변은 간결하게 해줘. " +
-  "필요하면 웹 검색 결과를 참고해서 최신 정보로 답변할 수 있어. 환율처럼 정확한 숫자가 필요한 경우, " +
-  "검색 결과에서 찾은 최신 값을 기준으로 답하고 출처를 간단히 언급해줘.";
+  "너는 '자비스'라는 이름의 AI 비서야. 영화 속 집사형 AI처럼 항상 정중한 존댓말을 쓰고, " +
+  "사용자를 '주인님'이라고 부르며 응대해. 예의 바르고 차분한 톤을 유지하되, 대답 자체는 " +
+  "간결하고 실용적으로 해줘. 필요하면 웹 검색 결과를 참고해서 최신 정보로 답변할 수 있어. " +
+  "환율처럼 정확한 숫자가 필요한 경우, 검색 결과에서 찾은 최신 값을 기준으로 답하고 출처를 간단히 언급해줘.";
 
 // 관리자 유저 ID (.env의 ADMIN_USER_ID). 이 사람만 권한 부여/회수 명령어를 쓸 수 있음.
 const ADMIN_USER_ID = process.env.ADMIN_USER_ID;
+
+// 이 채널 ID에서는 멘션 없이도 모든 메시지에 자동으로 응답함 (.env의 AI_CHANNEL_ID)
+const AI_CHANNEL_ID = process.env.AI_CHANNEL_ID;
 
 // 허용된 유저 목록을 파일에 저장해서 봇 재시작해도 유지되게 함.
 const ALLOWLIST_FILE = "./allowed_users.json";
@@ -157,8 +161,9 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // 봇이 멘션되었을 때만 반응 (예: @봇이름 안녕)
-  if (!message.mentions.has(client.user)) return;
+  // 봇이 멘션됐거나, 전용 AI 채널에서 온 메시지면 반응
+  const isAiChannel = AI_CHANNEL_ID && message.channel.id === AI_CHANNEL_ID;
+  if (!message.mentions.has(client.user) && !isAiChannel) return;
 
   // 허용된 유저만 사용 가능
   if (!allowedUsers.has(message.author.id)) {
