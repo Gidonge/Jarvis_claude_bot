@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Partials } from "discord.js";
+import { Client, GatewayIntentBits, Partials, EmbedBuilder } from "discord.js";
 import dotenv from "dotenv";
 import fs from "fs";
 
@@ -35,6 +35,25 @@ function saveAllowedUsers(set) {
 }
 
 const allowedUsers = loadAllowedUsers();
+
+// 아이온2 서버명 → 서버ID 매핑을 파일에 저장 (관리자가 !서버추가 명령어로 등록)
+const SERVER_IDS_FILE = "./aion2_servers.json";
+
+function loadServerIds() {
+  try {
+    const raw = fs.readFileSync(SERVER_IDS_FILE, "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    // 처음 확인된 서버 하나 기본으로 넣어둠
+    return { 이슈타르: 1019 };
+  }
+}
+
+function saveServerIds(map) {
+  fs.writeFileSync(SERVER_IDS_FILE, JSON.stringify(map));
+}
+
+const serverIds = loadServerIds();
 
 const client = new Client({
   intents: [
@@ -243,19 +262,174 @@ async function searchAion2Character(serverId, nickname) {
   );
 }
 
+function buildAion2Embed(data) {
+  const itemLevel =
+    data.stat?.statList?.find((s) => s.type === "ItemLevel")?.value ?? data.combat_power;
+  const combatPower = data.combat_power2 ?? data.nc_combat_power;
+
+  // 무기(메인핸드/서브핸드) 요약
+  const weapon = data.equipment?.find((e) => e.slot_pos_name === "MainHand");
+  const subWeapon = data.equipment?.find((e) => e.slot_pos_name === "SubHand");
+  const weaponText = weapon
+    ? `${weapon.name} (+${weapon.enhance_level}${weapon.exceed_level ? `, 초월${weapon.exceed_level}` : ""})`
+    : "-";
+  const subWeaponText = subWeapon
+    ? `${subWeapon.name} (+${subWeapon.enhance_level}${subWeapon.exceed_level ? `, 초월${subWeapon.exceed_level}` : ""})`
+    : "-";
+
+  // 주요 스탯 6종 (위력/민첩/지식/체력/정확/의지)
+  const mainStatOrder = ["STR", "DEX", "INT", "CON", "AGI", "WIS"];
+  const mainStats = (data.stat?.statList ?? [])
+    .filter((s) => mainStatOrder.includes(s.type))
+    .sort((a, b) => mainStatOrder.indexOf(a.type) - mainStatOrder.indexOf(b.type))
+    .map((s) => `${s.name} ${s.value}`)
+    .join(" · ");
+
+  // 아르카나 목록
+  const arcanaNames = (data.equipment ?? [])
+    .filter((e) => e.is_arcana)
+    .map((e) => e.name)
+    .join(", ");
+
+  // 데바니온 보드 개방 현황
+  const daevanion = (data.daevanion_board_summary ?? [])
+    .map((b) => `${b.name} ${b.openNodeCount}/${b.totalNodeCount}`)
+    .join(" · ");
+
+  // 펫 보유 현황
+  const petText = [
+    data.wild_pet_total ? `야성 ${data.wild_pet_total}` : null,
+    data.intelligent_pet_total ? `지성 ${data.intelligent_pet_total}` : null,
+    data.nature_pet_total ? `자연 ${data.nature_pet_total}` : null,
+    data.morph_pet_total ? `변형 ${data.morph_pet_total}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const embed = new EmbedBuilder()
+    .setTitle(`${data.nickname} — ${data.server} (${data.race} / ${data.job})`)
+    .setColor(0x8a5cf6)
+    .setThumbnail(data.avatar_url || null)
+    .addFields(
+      { name: "레벨", value: String(data.level ?? "-"), inline: true },
+      {
+        name: "아이템 레벨",
+        value: itemLevel?.toLocaleString?.("ko-KR") ?? String(itemLevel ?? "-"),
+        inline: true,
+      },
+      {
+        name: "전투력",
+        value: combatPower?.toLocaleString?.("ko-KR") ?? String(combatPower ?? "-"),
+        inline: true,
+      },
+      { name: "길드", value: data.guild || "-", inline: true },
+      { name: "날개", value: data.wing?.name || "-", inline: true },
+      {
+        name: "보유 타이틀",
+        value: `${data.title_summary?.owned_count ?? "-"} / ${data.title_summary?.total_count ?? "-"}`,
+        inline: true,
+      },
+      { name: "무기", value: weaponText, inline: true },
+      { name: "보조무기", value: subWeaponText, inline: true }
+    );
+
+  if (mainStats) embed.addFields({ name: "주요 스탯", value: mainStats });
+  if (arcanaNames) embed.addFields({ name: "아르카나", value: arcanaNames });
+  if (daevanion) embed.addFields({ name: "데바니온 개방", value: daevanion });
+  if (petText) embed.addFields({ name: "펫 보유", value: petText });
+
+  return embed;
+}
+
 function formatAion2Character(data) {
   const itemLevel =
     data.stat?.statList?.find((s) => s.type === "ItemLevel")?.value ?? data.combat_power;
   const combatPower = data.combat_power2 ?? data.nc_combat_power;
 
   return (
-    `**${data.nickname}** (${data.server} / ${data.race} / ${data.job})\n` +
-    `레벨: ${data.level} | 아이템 레벨: ${itemLevel?.toLocaleString?.("ko-KR") ?? itemLevel}\n` +
-    `전투력: ${combatPower?.toLocaleString?.("ko-KR") ?? combatPower}\n` +
-    `길드: ${data.guild || "-"}\n` +
-    `보유 타이틀: ${data.title_summary?.owned_count ?? "-"} / ${data.title_summary?.total_count ?? "-"}\n` +
-    `날개: ${data.wing?.name || "-"}`
+    `${data.nickname} (${data.server} / ${data.race} / ${data.job}), ` +
+    `레벨 ${data.level}, 아이템 레벨 ${itemLevel}, 전투력 ${combatPower}, ` +
+    `길드 ${data.guild || "-"}, 타이틀 ${data.title_summary?.owned_count ?? "-"}/${data.title_summary?.total_count ?? "-"}, ` +
+    `날개 ${data.wing?.name || "-"}`
   );
+}
+
+// AI 분석에 넘길 캐릭터 정보를 간결하게 압축 (토큰 절약 + 핵심만 전달)
+function condenseAion2Data(data) {
+  const equipmentSummary = (data.equipment ?? [])
+    .filter((e) => !e.is_arcana)
+    .map((e) => ({
+      slot: e.slot_pos_name,
+      name: e.name,
+      grade: e.grade,
+      enchant: e.enhance_level,
+      exceed: e.exceed_level,
+    }));
+
+  const accessorySummary = (data.accessories ?? []).map((e) => ({
+    slot: e.slot_pos_name,
+    name: e.name,
+    grade: e.grade,
+    enchant: e.enhance_level,
+    exceed: e.exceed_level,
+  }));
+
+  const arcana = (data.equipment ?? []).filter((e) => e.is_arcana).map((e) => e.name);
+
+  const mainStatOrder = ["STR", "DEX", "INT", "CON", "AGI", "WIS"];
+  const mainStats = Object.fromEntries(
+    (data.stat?.statList ?? [])
+      .filter((s) => mainStatOrder.includes(s.type))
+      .map((s) => [s.type, s.value])
+  );
+
+  return {
+    nickname: data.nickname,
+    race: data.race,
+    job: data.job,
+    level: data.level,
+    itemLevel: data.stat?.statList?.find((s) => s.type === "ItemLevel")?.value,
+    combatPower: data.combat_power2 ?? data.nc_combat_power,
+    mainStats,
+    equipment: equipmentSummary,
+    accessories: accessorySummary,
+    arcana,
+    daevanionOpenNodes: data.daevanion_board_summary,
+    wing: data.wing?.name,
+    titleOwned: data.title_summary,
+    skillPriorityTop: (data.skill_priorities?.active ?? []).slice(0, 8).map((s) => s.skill_name),
+  };
+}
+
+const AION2_ANALYSIS_PROMPT =
+  "너는 MMORPG 아이온2의 숙련된 스펙업 코치야. 사용자가 준 캐릭터 데이터(JSON)를 분석해서, " +
+  "1) 현재 상태 한 줄 요약, 2) 강화/초월/등급 중 가장 낮은 장비 슬롯 지적, 3) 다음에 우선적으로 " +
+  "투자하면 좋을 항목 3~5개를 순서대로, 각 항목마다 이유를 한 줄씩 붙여서 한국어로 간결하게 답변해줘. " +
+  "장황한 설명 없이 실용적인 조언 위주로.";
+
+async function analyzeAion2Character(data) {
+  const condensed = condenseAion2Data(data);
+  const messages = [
+    { role: "system", content: AION2_ANALYSIS_PROMPT },
+    { role: "user", content: JSON.stringify(condensed) },
+  ];
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ model: MODEL, messages }), // 분석은 검색 불필요하므로 web 플러그인 생략
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`OpenRouter API 오류 (${response.status}): ${errText}`);
+  }
+
+  const json = await response.json();
+  return json.choices?.[0]?.message?.content ?? "분석 결과를 받지 못했어요.";
 }
 
 client.on("messageCreate", async (message) => {
@@ -433,20 +607,93 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- 아이온2 캐릭터 검색 명령어 (!아이온2 서버ID 닉네임) ---
+  // --- 서버명-ID 등록 명령어 (!서버추가 서버명 숫자ID, 관리자만) ---
+  if (message.content.startsWith("!서버추가")) {
+    if (message.author.id !== ADMIN_USER_ID) {
+      await message.reply("관리자만 사용할 수 있는 명령어예요.");
+      return;
+    }
+
+    const [, name, idRaw] = message.content.trim().split(/\s+/);
+    const id = Number(idRaw);
+
+    if (!name || !idRaw || Number.isNaN(id)) {
+      await message.reply("사용법: `!서버추가 서버명 숫자ID` (예: `!서버추가 이슈타르 1019`)");
+      return;
+    }
+
+    serverIds[name] = id;
+    saveServerIds(serverIds);
+    await message.reply(`서버 등록 완료: ${name} → ${id}. 이제 \`!아이온2 ${name} 닉네임\`으로 쓰실 수 있어요.`);
+    return;
+  }
+
+  // --- 아이온2 캐릭터 스펙업 분석 (!아이온2분석 서버명또는ID 닉네임) ---
+  if (message.content.startsWith("!아이온2분석")) {
+    if (!allowedUsers.has(message.author.id)) {
+      await message.reply("이 봇은 권한이 있는 사용자만 사용할 수 있어요.");
+      return;
+    }
+
+    const [, serverToken, nickname] = message.content.trim().split(/\s+/);
+
+    if (!serverToken || !nickname) {
+      await message.reply("사용법: `!아이온2분석 서버명 닉네임` (예: `!아이온2분석 이슈타르 기동이`)");
+      return;
+    }
+
+    const serverId = serverIds[serverToken] ?? Number(serverToken);
+    if (Number.isNaN(serverId)) {
+      await message.reply(`"${serverToken}"은 등록된 서버명도 아니고 숫자 ID도 아니에요.`);
+      return;
+    }
+
+    try {
+      await message.channel.sendTyping();
+      const data = await searchAion2Character(serverId, nickname);
+      const analysis = await analyzeAion2Character(data);
+      const replyText = `**${nickname}** 스펙업 분석\n\n${analysis}`;
+
+      if (replyText.length > 2000) {
+        const chunks = replyText.match(/[\s\S]{1,1900}/g) ?? [];
+        for (const chunk of chunks) {
+          await message.channel.send(chunk);
+        }
+      } else {
+        await message.reply(replyText);
+      }
+      addToHistory(message.channel.id, `(아이온2 스펙업 분석: ${nickname})`, replyText);
+    } catch (error) {
+      await message.reply(`분석 실패: ${error.message}`);
+    }
+    return;
+  }
+
+  // --- 아이온2 캐릭터 검색 명령어 (!아이온2 서버명또는ID 닉네임) ---
   if (message.content.startsWith("!아이온2")) {
     if (!allowedUsers.has(message.author.id)) {
       await message.reply("이 봇은 권한이 있는 사용자만 사용할 수 있어요.");
       return;
     }
 
-    const [, serverIdRaw, nickname] = message.content.trim().split(/\s+/);
-    const serverId = Number(serverIdRaw);
+    const [, serverToken, nickname] = message.content.trim().split(/\s+/);
 
-    if (!serverIdRaw || !nickname || Number.isNaN(serverId)) {
+    if (!serverToken || !nickname) {
+      const known = Object.keys(serverIds).join(", ") || "(등록된 서버 없음)";
       await message.reply(
-        "사용법: `!아이온2 서버ID 닉네임` (예: `!아이온2 1019 기동이`)\n" +
-          "서버ID는 aion2tool.com에서 캐릭터 검색했을 때 뜨는 주소(aion2tool.com/char/serverid=숫자/닉네임)에서 확인 가능해요."
+        "사용법: `!아이온2 서버명 닉네임` (예: `!아이온2 이슈타르 기동이`)\n" +
+          `현재 등록된 서버: ${known}\n` +
+          "등록 안 된 서버는 숫자 ID로도 가능해요: `!아이온2 1019 기동이`\n" +
+          "새 서버 등록은 관리자가 `!서버추가 서버명 숫자ID`로 가능해요."
+      );
+      return;
+    }
+
+    const serverId = serverIds[serverToken] ?? Number(serverToken);
+
+    if (Number.isNaN(serverId)) {
+      await message.reply(
+        `"${serverToken}"은 등록된 서버명도 아니고 숫자 ID도 아니에요. \`!서버추가\`로 먼저 등록해주세요.`
       );
       return;
     }
@@ -454,9 +701,13 @@ client.on("messageCreate", async (message) => {
     try {
       await message.channel.sendTyping();
       const data = await searchAion2Character(serverId, nickname);
-      const replyText = formatAion2Character(data);
-      await message.reply(replyText);
-      addToHistory(message.channel.id, `(아이온2 캐릭터 조회: ${nickname})`, replyText);
+      const embed = buildAion2Embed(data);
+      await message.reply({ embeds: [embed] });
+      addToHistory(
+        message.channel.id,
+        `(아이온2 캐릭터 조회: ${nickname})`,
+        formatAion2Character(data)
+      );
     } catch (error) {
       await message.reply(`캐릭터 조회 실패: ${error.message}`);
     }
