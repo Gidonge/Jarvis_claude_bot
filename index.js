@@ -1,10 +1,12 @@
 import { Client, GatewayIntentBits, Partials } from "discord.js";
-import Anthropic from "@anthropic-ai/sdk";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// 무료 모델 자동 선택 라우터. 특정 모델을 고정하고 싶으면
+// 예: "meta-llama/llama-3.1-405b-instruct:free" 처럼 :free로 끝나는 모델 ID로 바꾸세요.
+const MODEL = "openrouter/free";
+const SYSTEM_PROMPT = "너는 디스코드 서버에서 사용자들을 돕는 친절한 AI 어시스턴트야. 답변은 간결하게 해줘.";
 
 const client = new Client({
   intents: [
@@ -19,11 +21,31 @@ const client = new Client({
 const historyByChannel = new Map();
 const MAX_HISTORY = 10; // 채널당 최근 10개 메시지까지만 기억
 
-const SYSTEM_PROMPT = "너는 디스코드 서버에서 사용자들을 돕는 친절한 AI 어시스턴트야. 답변은 간결하게 해줘.";
-
 client.once("ready", () => {
   console.log(`로그인 완료: ${client.user.tag}`);
 });
+
+async function askOpenRouter(messages) {
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      messages,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`OpenRouter API 오류 (${response.status}): ${errText}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content ?? "(응답을 받지 못했어요)";
+}
 
 client.on("messageCreate", async (message) => {
   // 봇 자신의 메시지는 무시
@@ -49,17 +71,8 @@ client.on("messageCreate", async (message) => {
   try {
     await message.channel.sendTyping();
 
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-5",
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: history,
-    });
-
-    const replyText = response.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("\n") || "(응답을 받지 못했어요)";
+    const messages = [{ role: "system", content: SYSTEM_PROMPT }, ...history];
+    const replyText = await askOpenRouter(messages);
 
     history.push({ role: "assistant", content: replyText });
 
@@ -79,7 +92,7 @@ client.on("messageCreate", async (message) => {
       await message.reply(replyText);
     }
   } catch (error) {
-    console.error("Anthropic API 에러:", error);
+    console.error("OpenRouter API 에러:", error);
     await message.reply("응답을 생성하는 중 오류가 발생했어요. 잠시 후 다시 시도해주세요.");
   }
 });
